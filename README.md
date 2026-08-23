@@ -14,9 +14,20 @@ both.
 
 ## What it does
 
-- **Power policy** — the runner service is up on AC power and stopped on
-  battery. It never kills a job mid-run (that would fail your CI for
-  nothing): a running job finishes, then the next refresh stops the service.
+- **Power policy** — by default the runner service is up on AC power and
+  stopped on battery. It never kills a job mid-run (that would fail your CI
+  for nothing): a running job finishes, then the next refresh stops the
+  service. *Run on battery* in the dropdown overrides this and keeps the
+  runner up whatever the power source.
+- **Keep-awake** — while a job is executing, a `caffeinate -i` assertion
+  pinned to the worker process stops the Mac idle-sleeping mid-job. Without
+  it, CPU load alone does not prevent sleep, a sleeping runner drops off
+  GitHub, and the job is failed after ten minutes of silence. The assertion
+  lives exactly as long as the job: an idle runner lets the machine sleep
+  normally, and queued jobs simply wait for the next wake. A closed lid still
+  sleeps regardless — clamshell mode outranks assertions. Toggleable in the
+  dropdown (*Keep Mac awake during jobs*, on by default); switching it off
+  also releases the assertion for a job already running.
 - **Menu bar status** — SF Symbol glyphs matching the native menu bar style:
   - 📡 idle, listening for jobs
   - ⚙️ *N*m — job running, with elapsed minutes beside the glyph
@@ -49,6 +60,19 @@ That's it — no configuration. The plugin reads the repository from the
 runner's own `.runner` file and finds the launchd service from its plist. If
 your runner lives somewhere other than `~/actions-runner`, set `RUNNERBAR_DIR`
 in the plugin's environment.
+
+## Dropdown controls
+
+- **Pause runner** — stop the runner until resumed, overriding everything
+  else.
+- **Keep Mac awake during jobs** (default: on) — the keep-awake assertion
+  described above.
+- **Run on battery** (default: off) — ignore the power source and keep the
+  runner up all the time.
+
+Settings persist as flag files in the runner directory
+(`.runnerbar-paused`, `.runnerbar-no-caffeinate`, `.runnerbar-always-run`),
+so they survive reboots and SwiftBar restarts.
 
 ## Notes
 

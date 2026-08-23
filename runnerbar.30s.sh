@@ -23,7 +23,12 @@
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 RUNNER_DIR="${RUNNERBAR_DIR:-$HOME/actions-runner}"
+
+# Settings are flag files in the runner directory: present = the non-default
+# choice. Toggled from the dropdown; survive reboots and SwiftBar restarts.
 PAUSE_FLAG="$RUNNER_DIR/.runnerbar-paused"
+NO_CAFFEINATE_FLAG="$RUNNER_DIR/.runnerbar-no-caffeinate"
+ALWAYS_RUN_FLAG="$RUNNER_DIR/.runnerbar-always-run"
 
 REPO=$(sed -n 's|.*"gitHubUrl": "https://github.com/\([^"]*\)".*|\1|p' "$RUNNER_DIR/.runner" 2>/dev/null)
 REPO="${REPO%/}"
@@ -49,6 +54,24 @@ if [ "$1" = "resume" ]; then
     cd "$RUNNER_DIR" && ./svc.sh start >/dev/null 2>&1
     exit 0
 fi
+if [ "$1" = "toggle-caffeinate" ]; then
+    if [ -f "$NO_CAFFEINATE_FLAG" ]; then
+        rm -f "$NO_CAFFEINATE_FLAG"
+    else
+        touch "$NO_CAFFEINATE_FLAG"
+        # Release any assertion already pinned to a running job.
+        pkill -f 'caffeinate -i -w' 2>/dev/null
+    fi
+    exit 0
+fi
+if [ "$1" = "toggle-always-run" ]; then
+    if [ -f "$ALWAYS_RUN_FLAG" ]; then
+        rm -f "$ALWAYS_RUN_FLAG"
+    else
+        touch "$ALWAYS_RUN_FLAG"
+    fi
+    exit 0
+fi
 
 # --- Observe ----------------------------------------------------------------
 on_ac=false
@@ -70,14 +93,20 @@ fi
 paused=false
 [ -f "$PAUSE_FLAG" ] && paused=true
 
-# --- Keep the Mac awake while a job runs ------------------------------------
+caffeinate_on=true
+[ -f "$NO_CAFFEINATE_FLAG" ] && caffeinate_on=false
+
+always_run=false
+[ -f "$ALWAYS_RUN_FLAG" ] && always_run=true
+
+# --- Keep the Mac awake while a job runs (toggleable) ------------------------
 # CPU load alone does not stop macOS idle-sleep — only a power assertion does,
 # and a Mac that dozes mid-job drops off GitHub, which fails the job after ten
 # minutes of silence. Pin an assertion to the worker process: `caffeinate -i`
 # holds it exactly until that pid exits, so an idle runner still lets the
 # machine sleep normally (queued jobs wait and start on wake). A closed lid
 # still sleeps regardless — clamshell mode outranks assertions.
-if $job_running; then
+if $job_running && $caffeinate_on; then
     worker_pid=$(pgrep -x Runner.Worker | head -1)
     if ! pgrep -f "caffeinate -i -w $worker_pid" >/dev/null; then
         nohup caffeinate -i -w "$worker_pid" >/dev/null 2>&1 &
@@ -85,8 +114,16 @@ if $job_running; then
 fi
 
 # --- Enforce ----------------------------------------------------------------
+# Default: runner up on AC, stopped on battery once the current job finishes.
+# "Run on battery" overrides that and keeps the runner up whatever the power
+# source; pause outranks everything.
 if ! $paused; then
-    if $on_ac && ! $loaded; then
+    if $always_run; then
+        if ! $loaded; then
+            cd "$RUNNER_DIR" && ./svc.sh start >/dev/null 2>&1
+            loaded=true
+        fi
+    elif $on_ac && ! $loaded; then
         cd "$RUNNER_DIR" && ./svc.sh start >/dev/null 2>&1
         loaded=true
     elif ! $on_ac && $loaded && ! $job_running; then
@@ -195,4 +232,14 @@ if $paused; then
 else
     echo "Pause runner | bash='$0' param1=pause terminal=false refresh=true"
 fi
+
+# Settings, ticked when active. Both act from the next refresh; switching
+# keep-awake off also releases the assertion held for a job already running.
+caffeinate_checked=false
+$caffeinate_on && caffeinate_checked=true
+battery_checked=false
+$always_run && battery_checked=true
+echo "Keep Mac awake during jobs | bash='$0' param1=toggle-caffeinate terminal=false refresh=true checked=$caffeinate_checked"
+echo "Run on battery | bash='$0' param1=toggle-always-run terminal=false refresh=true checked=$battery_checked"
+
 echo "Open Actions on GitHub | href=https://github.com/$REPO/actions"
