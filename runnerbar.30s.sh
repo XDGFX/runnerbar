@@ -1,97 +1,111 @@
 #!/bin/bash
-# RunnerBar — a SwiftBar plugin for a self-hosted GitHub Actions runner.
+# RunnerBar — a SwiftBar plugin for self-hosted GitHub Actions runners.
 #
-# Shows the runner in the macOS menu bar and keeps it power-aware: the runner
-# is up on AC power and stopped on battery — but never killed mid-job, since a
-# killed job fails CI; the active job finishes, then the next refresh stops the
-# service. The dropdown shows the run being worked, the queue in execution
-# order, and recent runs with durations.
+# Shows every runner installed on this Mac in the menu bar and keeps them
+# power-aware: runners up on AC power, stopped on battery — but never killed
+# mid-job, since a killed job fails CI; the active job finishes, then the next
+# refresh stops the service. The dropdown shows each runner's identity, the
+# run being worked, the queue in execution order, and recent runs with
+# durations.
 #
 # Runs every 30s (the .30s. in the filename). The policy lives here rather
 # than in launchd because launchd has no power-source condition. Consequence:
-# if SwiftBar isn't running, the runner stays in whatever state it was last in.
+# if SwiftBar isn't running, runners stay in whatever state they were last in.
 #
-# Zero config. Everything is read from the runner's own installation:
-#   - runner directory: ~/actions-runner (override with RUNNERBAR_DIR)
-#   - repository: the gitHubUrl in the runner's .runner file
-#   - launchd label: the actions.runner.*.plist in ~/Library/LaunchAgents
-# The queue/history sections need `gh` installed and authenticated; without it
-# the plugin still runs and simply shows "GitHub unreachable".
+# Zero config. Runners are discovered from their launchd plists in
+# ~/Library/LaunchAgents (one per runner, created by `./svc.sh install`), and
+# each runner's repository and name are read from the `.runner` file in its
+# install directory. The queue/history sections need `gh` installed and
+# authenticated; without it the plugin still runs and shows "GitHub
+# unreachable".
+#
+# <swiftbar.hideAbout>true</swiftbar.hideAbout>
+# <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
+# <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
+# <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
+# <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
 
 # SwiftBar launches plugins with a lean environment; gh and docker usually
 # live under Homebrew.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-RUNNER_DIR="${RUNNERBAR_DIR:-$HOME/actions-runner}"
+# Global settings are flag files here: present = the non-default choice.
+# Per-runner pause flags live in each runner's own directory instead, so they
+# follow the runner they belong to. All toggled from the dropdown; all survive
+# reboots and SwiftBar restarts.
+SETTINGS_DIR="$HOME/.config/runnerbar"
+NO_CAFFEINATE_FLAG="$SETTINGS_DIR/no-caffeinate"
+ALWAYS_RUN_FLAG="$SETTINGS_DIR/always-run"
 
-# Settings are flag files in the runner directory: present = the non-default
-# choice. Toggled from the dropdown; survive reboots and SwiftBar restarts.
-PAUSE_FLAG="$RUNNER_DIR/.runnerbar-paused"
-NO_CAFFEINATE_FLAG="$RUNNER_DIR/.runnerbar-no-caffeinate"
-ALWAYS_RUN_FLAG="$RUNNER_DIR/.runnerbar-always-run"
+# --- Discover runners --------------------------------------------------------
+# One launchd plist per installed runner; its ProgramArguments points at the
+# runner directory's runsvc.sh, which is how the directory is recovered. Kept
+# as parallel indexed arrays because macOS ships bash 3.2 (no associative
+# arrays).
+runner_dirs=()
+runner_labels=()
+runner_names=()
+runner_repos=()
 
-REPO=$(sed -n 's|.*"gitHubUrl": "https://github.com/\([^"]*\)".*|\1|p' "$RUNNER_DIR/.runner" 2>/dev/null)
-REPO="${REPO%/}"
-SVC_PLIST=$(ls "$HOME/Library/LaunchAgents"/actions.runner.*.plist 2>/dev/null | head -1)
-SVC_LABEL=$(basename "$SVC_PLIST" .plist)
+for plist in "$HOME/Library/LaunchAgents"/actions.runner.*.plist; do
+    [ -f "$plist" ] || continue
+    dir=$(sed -n 's|.*<string>\(.*\)/runsvc.sh</string>.*|\1|p' "$plist" | head -1)
+    [ -d "$dir" ] || continue
+    repo=$(sed -n 's|.*"gitHubUrl": "https://github.com/\([^"]*\)".*|\1|p' "$dir/.runner" 2>/dev/null)
+    name=$(sed -n 's|.*"agentName": "\([^"]*\)".*|\1|p' "$dir/.runner" 2>/dev/null)
+    [ -n "$repo" ] || continue
+    runner_dirs+=("$dir")
+    runner_labels+=("$(basename "$plist" .plist)")
+    runner_names+=("${name:-$(basename "$dir")}")
+    runner_repos+=("${repo%/}")
+done
 
-if [ -z "$REPO" ] || [ -z "$SVC_LABEL" ]; then
+if [ ${#runner_dirs[@]} -eq 0 ]; then
     echo "| sfimage=exclamationmark.triangle"
     echo "---"
-    echo "No runner found at $RUNNER_DIR | sfcolor=gray"
-    echo "Install one, or set RUNNERBAR_DIR in this plugin's environment | sfcolor=gray"
+    echo "No self-hosted runner found | sfcolor=gray"
+    echo "Install one with ./config.sh then ./svc.sh install — see the runner's docs | sfcolor=gray"
     exit 0
 fi
 
-# --- Manual toggle handlers (invoked from the dropdown, not on refresh) ------
-if [ "$1" = "pause" ]; then
-    touch "$PAUSE_FLAG"
-    cd "$RUNNER_DIR" && ./svc.sh stop >/dev/null 2>&1
-    exit 0
-fi
-if [ "$1" = "resume" ]; then
-    rm -f "$PAUSE_FLAG"
-    cd "$RUNNER_DIR" && ./svc.sh start >/dev/null 2>&1
-    exit 0
-fi
-if [ "$1" = "toggle-caffeinate" ]; then
-    if [ -f "$NO_CAFFEINATE_FLAG" ]; then
-        rm -f "$NO_CAFFEINATE_FLAG"
-    else
-        touch "$NO_CAFFEINATE_FLAG"
-        # Release any assertion already pinned to a running job.
-        pkill -f 'caffeinate -i -w' 2>/dev/null
-    fi
-    exit 0
-fi
-if [ "$1" = "toggle-always-run" ]; then
-    if [ -f "$ALWAYS_RUN_FLAG" ]; then
-        rm -f "$ALWAYS_RUN_FLAG"
-    else
-        touch "$ALWAYS_RUN_FLAG"
-    fi
-    exit 0
-fi
+# --- Toggle handlers (invoked from the dropdown, not on refresh) -------------
+# pause/resume act on one runner: its directory arrives as $2.
+case "$1" in
+    pause)
+        touch "$2/.runnerbar-paused"
+        cd "$2" && ./svc.sh stop >/dev/null 2>&1
+        exit 0
+        ;;
+    resume)
+        rm -f "$2/.runnerbar-paused"
+        cd "$2" && ./svc.sh start >/dev/null 2>&1
+        exit 0
+        ;;
+    toggle-caffeinate)
+        mkdir -p "$SETTINGS_DIR"
+        if [ -f "$NO_CAFFEINATE_FLAG" ]; then
+            rm -f "$NO_CAFFEINATE_FLAG"
+        else
+            touch "$NO_CAFFEINATE_FLAG"
+            # Release any assertion already pinned to a running job.
+            pkill -f 'caffeinate -i -w' 2>/dev/null
+        fi
+        exit 0
+        ;;
+    toggle-always-run)
+        mkdir -p "$SETTINGS_DIR"
+        if [ -f "$ALWAYS_RUN_FLAG" ]; then
+            rm -f "$ALWAYS_RUN_FLAG"
+        else
+            touch "$ALWAYS_RUN_FLAG"
+        fi
+        exit 0
+        ;;
+esac
 
-# --- Observe ----------------------------------------------------------------
+# --- Observe (machine-wide) --------------------------------------------------
 on_ac=false
 pmset -g batt | grep -q "AC Power" && on_ac=true
-
-loaded=false
-launchctl list "$SVC_LABEL" >/dev/null 2>&1 && loaded=true
-
-job_running=false
-worker_mins=""
-if pgrep -qx Runner.Worker; then
-    job_running=true
-    # etime is MM:SS or HH:MM:SS; runs of a day or more would need the DD- form,
-    # but job timeouts make that academic.
-    worker_mins=$(ps -o etime= -p "$(pgrep -x Runner.Worker | head -1)" |
-        awk -F: '{ if (NF == 3) print $1 * 60 + $2; else print $1 + 0 }')
-fi
-
-paused=false
-[ -f "$PAUSE_FLAG" ] && paused=true
 
 caffeinate_on=true
 [ -f "$NO_CAFFEINATE_FLAG" ] && caffeinate_on=false
@@ -99,76 +113,130 @@ caffeinate_on=true
 always_run=false
 [ -f "$ALWAYS_RUN_FLAG" ] && always_run=true
 
-# --- Keep the Mac awake while a job runs (toggleable) ------------------------
-# CPU load alone does not stop macOS idle-sleep — only a power assertion does,
-# and a Mac that dozes mid-job drops off GitHub, which fails the job after ten
-# minutes of silence. Pin an assertion to the worker process: `caffeinate -i`
-# holds it exactly until that pid exits, so an idle runner still lets the
-# machine sleep normally (queued jobs wait and start on wake). A closed lid
-# still sleeps regardless — clamshell mode outranks assertions.
-if $job_running && $caffeinate_on; then
-    worker_pid=$(pgrep -x Runner.Worker | head -1)
-    if ! pgrep -f "caffeinate -i -w $worker_pid" >/dev/null; then
-        nohup caffeinate -i -w "$worker_pid" >/dev/null 2>&1 &
-    fi
-fi
+# Every live worker process, machine-wide; attributed to runners below by the
+# runner directory in its command path.
+worker_pids=$(pgrep -x Runner.Worker)
 
-# --- Enforce ----------------------------------------------------------------
-# Default: runner up on AC, stopped on battery once the current job finishes.
-# "Run on battery" overrides that and keeps the runner up whatever the power
-# source; pause outranks everything.
-if ! $paused; then
-    if $always_run; then
-        if ! $loaded; then
-            cd "$RUNNER_DIR" && ./svc.sh start >/dev/null 2>&1
-            loaded=true
+# --- Observe and enforce, per runner -----------------------------------------
+runner_loaded=()
+runner_paused=()
+runner_mins=()
+
+i=0
+while [ $i -lt ${#runner_dirs[@]} ]; do
+    dir="${runner_dirs[$i]}"
+
+    loaded=false
+    launchctl list "${runner_labels[$i]}" >/dev/null 2>&1 && loaded=true
+
+    paused=false
+    [ -f "$dir/.runnerbar-paused" ] && paused=true
+
+    # This runner's active job, if any: the worker whose binary lives under
+    # this runner's directory. Elapsed minutes from the process age — etime is
+    # MM:SS or HH:MM:SS; job timeouts make the day form academic.
+    mins=""
+    for pid in $worker_pids; do
+        if ps -o command= -p "$pid" | grep -q "^$dir/"; then
+            mins=$(ps -o etime= -p "$pid" |
+                awk -F: '{ if (NF == 3) print $1 * 60 + $2; else print $1 + 0 }')
+            # Keep the Mac awake while this job runs (toggleable). CPU load
+            # alone does not stop macOS idle-sleep — only a power assertion
+            # does, and a Mac that dozes mid-job drops off GitHub, which fails
+            # the job after ten minutes of silence. Pinned to the worker pid:
+            # held exactly until the job ends, so an idle machine sleeps
+            # normally and queued jobs wait for the next wake. A closed lid
+            # still sleeps regardless — clamshell mode outranks assertions.
+            if $caffeinate_on && ! pgrep -f "caffeinate -i -w $pid" >/dev/null; then
+                nohup caffeinate -i -w "$pid" >/dev/null 2>&1 &
+            fi
+            break
         fi
-    elif $on_ac && ! $loaded; then
-        cd "$RUNNER_DIR" && ./svc.sh start >/dev/null 2>&1
-        loaded=true
-    elif ! $on_ac && $loaded && ! $job_running; then
-        cd "$RUNNER_DIR" && ./svc.sh stop >/dev/null 2>&1
-        loaded=false
+    done
+
+    # Default: runner up on AC, stopped on battery once the current job
+    # finishes. "Run on battery" keeps every runner up whatever the power
+    # source; a runner's own pause outranks everything.
+    if ! $paused; then
+        if { $always_run || $on_ac; } && ! $loaded; then
+            cd "$dir" && ./svc.sh start >/dev/null 2>&1
+            loaded=true
+        elif ! $always_run && ! $on_ac && $loaded && [ -z "$mins" ]; then
+            cd "$dir" && ./svc.sh stop >/dev/null 2>&1
+            loaded=false
+        fi
     fi
-fi
 
-# --- Draw -------------------------------------------------------------------
+    runner_loaded+=("$loaded")
+    runner_paused+=("$paused")
+    runner_mins+=("$mins")
+    i=$((i + 1))
+done
+
+# --- Draw the menu bar item --------------------------------------------------
 # SF Symbols as template images, to sit flush with the other menu bar apps.
-# While a job runs, the elapsed minutes ride next to the glyph.
-if $paused; then
-    header="| sfimage=pause.circle"
-    state="Paused manually"
-elif $job_running; then
-    # A plain leading space gets trimmed from the title; a non-breaking space
-    # (UTF-8 C2 A0) survives, and puts air between the glyph and the number.
-    # sfsize pins the glyph to standard menu-bar symbol size — unpinned it
-    # renders oversized and visually swallows the gap before the number.
-    header="$(printf '\xc2\xa0')${worker_mins}m | sfimage=gearshape.arrow.triangle.2.circlepath sfsize=13"
-    state="Job running (${worker_mins}m elapsed)"
-elif $loaded; then
-    header="| sfimage=antenna.radiowaves.left.and.right"
-    state="Idle, listening for jobs"
+# The aggregate wins: any job running shows the gear (with elapsed minutes, or
+# a job count when several run at once); else any listening runner shows the
+# antenna; else pause or moon.
+jobs_running=0
+longest=0
+any_loaded=false
+all_paused=true
+for i in "${!runner_dirs[@]}"; do
+    if [ -n "${runner_mins[$i]}" ]; then
+        jobs_running=$((jobs_running + 1))
+        [ "${runner_mins[$i]}" -gt "$longest" ] && longest="${runner_mins[$i]}"
+    fi
+    [ "${runner_loaded[$i]}" = "true" ] && any_loaded=true
+    [ "${runner_paused[$i]}" = "true" ] || all_paused=false
+done
+
+# A plain leading space gets trimmed from the title; a non-breaking space
+# (UTF-8 C2 A0) survives, and puts air between the glyph and the number.
+# sfsize pins the glyph to standard menu-bar symbol size — unpinned it renders
+# oversized and visually swallows the gap before the number.
+nbsp=$(printf '\xc2\xa0')
+if [ "$jobs_running" -gt 1 ]; then
+    echo "${nbsp}${jobs_running} jobs | sfimage=gearshape.arrow.triangle.2.circlepath sfsize=13"
+elif [ "$jobs_running" -eq 1 ]; then
+    echo "${nbsp}${longest}m | sfimage=gearshape.arrow.triangle.2.circlepath sfsize=13"
+elif $all_paused; then
+    echo "| sfimage=pause.circle"
+elif $any_loaded; then
+    echo "| sfimage=antenna.radiowaves.left.and.right"
 else
-    header="| sfimage=moon.zzz"
-    state="Stopped (on battery)"
+    echo "| sfimage=moon.zzz"
 fi
-
-echo "$header"
-echo "---"
-echo "CI runner: $state | sfcolor=gray"
 echo "---"
 
-# --- Run queue and history ---------------------------------------------------
-# One API call covers all three sections. Skipped when asleep on battery —
-# no point spending radio time on a runner that isn't going to pick jobs up.
-runs_json=""
-if $loaded || $job_running || $on_ac; then
-    runs_json=$(gh run list -R "$REPO" --limit 20 \
-        --json displayTitle,status,conclusion,createdAt,startedAt,updatedAt,headBranch,url 2>/dev/null)
-fi
+# --- Dropdown: one block per runner ------------------------------------------
+for i in "${!runner_dirs[@]}"; do
+    dir="${runner_dirs[$i]}"
+    repo="${runner_repos[$i]}"
+    mins="${runner_mins[$i]}"
 
-if [ -n "$runs_json" ]; then
-    python3 - "$runs_json" "$worker_mins" <<'EOF'
+    if [ "${runner_paused[$i]}" = "true" ]; then
+        state="Paused manually"
+    elif [ -n "$mins" ]; then
+        state="Job running (${mins}m elapsed)"
+        $on_ac || $always_run || state="Job running — on battery, stops when it finishes"
+    elif [ "${runner_loaded[$i]}" = "true" ]; then
+        state="Idle, listening for jobs"
+    else
+        state="Stopped (on battery)"
+    fi
+
+    echo "${runner_names[$i]} — $repo: $state | sfcolor=gray"
+
+    # One API call per runner covers all three sections. Skipped when asleep
+    # on battery — no point spending radio time on a runner that isn't going
+    # to pick jobs up.
+    runs_json=""
+    if [ "${runner_loaded[$i]}" = "true" ] || [ -n "$mins" ] || $on_ac; then
+        runs_json=$(gh run list -R "$repo" --limit 20 \
+            --json displayTitle,status,conclusion,createdAt,startedAt,updatedAt,headBranch,url 2>/dev/null)
+        if [ -n "$runs_json" ]; then
+            python3 - "$runs_json" "$mins" <<'EOF'
 import datetime
 import json
 import sys
@@ -196,10 +264,10 @@ active = [r for r in runs if r['status'] == 'in_progress']
 queued = [r for r in runs if r['status'] in ('queued', 'waiting', 'requested', 'pending')]
 done = [r for r in runs if r['status'] == 'completed'][:4]
 
-# A single runner drains the queue oldest-first, so show it in that order —
-# and GitHub reports a run as merely "queued" between its serial jobs, so when
-# the worker process is alive but no run says in_progress, the oldest queued
-# run is the one actually being worked. Its elapsed time comes from the worker
+# A runner drains its queue oldest-first, so show it in that order — and
+# GitHub reports a run as merely "queued" between its serial jobs, so when the
+# worker process is alive but no run says in_progress, the oldest queued run
+# is the one actually being worked. Its elapsed time comes from the worker
 # process age (argv[2]), which the API cannot see.
 queued.sort(key=lambda r: r['createdAt'])
 worker_mins = sys.argv[2]
@@ -210,7 +278,10 @@ if not active and queued and worker_mins:
 elif active:
     print("WORKING ON | size=11 sfcolor=gray")
     for run in active:
-        line(run, f" ({run['headBranch']}) — {mins(when(run['startedAt']), now)}", 'gearshape')
+        # Prefer the worker's real age: the API's startedAt includes queue
+        # gaps and any time the machine spent asleep mid-run.
+        shown = f"{worker_mins}m" if worker_mins and len(active) == 1 else mins(when(run['startedAt']), now)
+        line(run, f" ({run['headBranch']}) — {shown}", 'gearshape')
 if queued:
     print(f"QUEUED — {len(queued)} WAITING | size=11 sfcolor=gray")
     for run in queued:
@@ -222,24 +293,27 @@ if done:
             run['conclusion'], 'slash.circle')
         line(run, f" — {mins(when(run['startedAt']), when(run['updatedAt']))}", icon)
 EOF
-elif $loaded || $job_running || $on_ac; then
-    echo "GitHub unreachable | sfcolor=gray"
-fi
+        else
+            echo "GitHub unreachable | sfcolor=gray"
+        fi
+    fi
 
-echo "---"
-if $paused; then
-    echo "Resume runner | bash='$0' param1=resume terminal=false refresh=true"
-else
-    echo "Pause runner | bash='$0' param1=pause terminal=false refresh=true"
-fi
+    # Per-runner controls; the runner directory rides along as param2.
+    if [ "${runner_paused[$i]}" = "true" ]; then
+        echo "Resume runner | bash='$0' param1=resume param2='$dir' terminal=false refresh=true"
+    else
+        echo "Pause runner | bash='$0' param1=pause param2='$dir' terminal=false refresh=true"
+    fi
+    echo "Open Actions on GitHub | href=https://github.com/$repo/actions"
+    echo "---"
+done
 
-# Settings, ticked when active. Both act from the next refresh; switching
-# keep-awake off also releases the assertion held for a job already running.
+# --- Global settings ----------------------------------------------------------
+# Ticked when active. Both act from the next refresh; switching keep-awake off
+# also releases the assertion held for a job already running.
 caffeinate_checked=false
 $caffeinate_on && caffeinate_checked=true
 battery_checked=false
 $always_run && battery_checked=true
 echo "Keep Mac awake during jobs | bash='$0' param1=toggle-caffeinate terminal=false refresh=true checked=$caffeinate_checked"
 echo "Run on battery | bash='$0' param1=toggle-always-run terminal=false refresh=true checked=$battery_checked"
-
-echo "Open Actions on GitHub | href=https://github.com/$REPO/actions"

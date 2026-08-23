@@ -53,34 +53,45 @@ both.
 
 ```sh
 git clone https://github.com/XDGFX/runnerbar.git
-ln -s "$PWD/runnerbar/runnerbar.30s.sh" <your SwiftBar plugin folder>/
+cd runnerbar && ./install.sh
 ```
 
-That's it — no configuration. The plugin reads the repository from the
-runner's own `.runner` file and finds the launchd service from its plist. If
-your runner lives somewhere other than `~/actions-runner`, set `RUNNERBAR_DIR`
-in the plugin's environment.
+The script installs SwiftBar if it's missing, wires the plugin in (pointing
+SwiftBar at the clone, so `git pull` updates it in place), and sets SwiftBar
+to start at login. No configuration: runners are discovered from their launchd
+plists, and each one's repository and name are read from the `.runner` file in
+its install directory.
+
+## Multiple runners
+
+Every runner installed on the machine is shown — GitHub binds a self-hosted
+runner to one repository (personal accounts don't get org-level runners), so
+"multiple repos" means one installed runner each, and RunnerBar picks them all
+up automatically. The dropdown gives each runner its own block, headed by its
+identity (`Name — owner/repo: state`), with its own queue, history, and pause
+control. The menu bar glyph aggregates: elapsed minutes while one job runs, a
+job count while several do.
 
 ## Dropdown controls
 
-- **Pause runner** — stop the runner until resumed, overriding everything
-  else.
-- **Keep Mac awake during jobs** (default: on) — the keep-awake assertion
-  described above.
-- **Run on battery** (default: off) — ignore the power source and keep the
-  runner up all the time.
+- **Pause runner** (per runner) — stop that runner until resumed, overriding
+  everything else.
+- **Keep Mac awake during jobs** (global, default: on) — the keep-awake
+  assertion described above.
+- **Run on battery** (global, default: off) — ignore the power source and
+  keep every runner up all the time.
 
-Settings persist as flag files in the runner directory
-(`.runnerbar-paused`, `.runnerbar-no-caffeinate`, `.runnerbar-always-run`),
-so they survive reboots and SwiftBar restarts.
+Settings persist as flag files — global ones in `~/.config/runnerbar/`,
+each pause flag in its runner's own directory — so they survive reboots and
+SwiftBar restarts. SwiftBar's own footer rows (About, Run in Terminal, and
+friends) are hidden via the plugin's metadata; to also hide SwiftBar's app
+icon from the menu bar, untick it in SwiftBar's preferences.
 
 ## Notes
 
 - The policy runs on the plugin's 30-second refresh, because launchd has no
-  power-source condition. If SwiftBar isn't running, the runner stays in
-  whatever state it was last left in.
-- One runner per machine is assumed (the first
-  `actions.runner.*.plist` found wins).
+  power-source condition. If SwiftBar isn't running, runners stay in
+  whatever state they were last left in.
 - GitHub deregisters a runner that stays offline for 14 days; on a
   daily-driver laptop that never comes up.
 
