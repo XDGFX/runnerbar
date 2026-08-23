@@ -70,6 +70,20 @@ fi
 paused=false
 [ -f "$PAUSE_FLAG" ] && paused=true
 
+# --- Keep the Mac awake while a job runs ------------------------------------
+# CPU load alone does not stop macOS idle-sleep — only a power assertion does,
+# and a Mac that dozes mid-job drops off GitHub, which fails the job after ten
+# minutes of silence. Pin an assertion to the worker process: `caffeinate -i`
+# holds it exactly until that pid exits, so an idle runner still lets the
+# machine sleep normally (queued jobs wait and start on wake). A closed lid
+# still sleeps regardless — clamshell mode outranks assertions.
+if $job_running; then
+    worker_pid=$(pgrep -x Runner.Worker | head -1)
+    if ! pgrep -f "caffeinate -i -w $worker_pid" >/dev/null; then
+        nohup caffeinate -i -w "$worker_pid" >/dev/null 2>&1 &
+    fi
+fi
+
 # --- Enforce ----------------------------------------------------------------
 if ! $paused; then
     if $on_ac && ! $loaded; then
