@@ -4,6 +4,8 @@ A [SwiftBar](https://github.com/swiftbar/SwiftBar) plugin that puts a
 self-hosted GitHub Actions runner in the macOS menu bar — and keeps it off
 your battery.
 
+![RunnerBar in the menu bar](menubar.png)
+
 Running your own runner is the free-tier escape hatch for private repos, but
 the stock installation has two gaps on a laptop: it happily burns battery in
 the background, and it's invisible — you can't tell whether it's idle,
@@ -23,6 +25,9 @@ both.
 - **The dropdown** — what the runner is working on right now, the queue in
   execution order, and recent runs with their durations. Every line links to
   its run on GitHub.
+
+<img src="dropdown.png" alt="The dropdown: working on, queued, and recently completed sections" width="640">
+
 
 ## Requirements
 
