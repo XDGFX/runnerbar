@@ -36,6 +36,12 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 SETTINGS_DIR="$HOME/.config/runnerbar"
 NO_CAFFEINATE_FLAG="$SETTINGS_DIR/no-caffeinate"
 ALWAYS_RUN_FLAG="$SETTINGS_DIR/always-run"
+LOW_POWER_FLAG="$SETTINGS_DIR/low-power"
+
+# Low-power mode confines runner work to the efficiency cores, which is only a
+# thing on Apple silicon; elsewhere the toggle is hidden and the flag inert.
+e_cores=false
+[ "$(uname -m)" = "arm64" ] && e_cores=true
 
 # --- Discover runners --------------------------------------------------------
 # One launchd plist per installed runner; its ProgramArguments points at the
@@ -101,6 +107,20 @@ case "$1" in
         fi
         exit 0
         ;;
+    toggle-low-power)
+        mkdir -p "$SETTINGS_DIR"
+        if [ -f "$LOW_POWER_FLAG" ]; then
+            rm -f "$LOW_POWER_FLAG"
+            # Lift the background policy from live runner processes now
+            # rather than at their next restart.
+            for pid in $(pgrep -x Runner.Listener) $(pgrep -x Runner.Worker); do
+                taskpolicy -B -p "$pid" 2>/dev/null
+            done
+        else
+            touch "$LOW_POWER_FLAG"
+        fi
+        exit 0
+        ;;
 esac
 
 # --- Observe (machine-wide) --------------------------------------------------
@@ -113,9 +133,25 @@ caffeinate_on=true
 always_run=false
 [ -f "$ALWAYS_RUN_FLAG" ] && always_run=true
 
+low_power=false
+$e_cores && [ -f "$LOW_POWER_FLAG" ] && low_power=true
+
 # Every live worker process, machine-wide; attributed to runners below by the
 # runner directory in its command path.
 worker_pids=$(pgrep -x Runner.Worker)
+
+# --- Low-power mode (Apple silicon only, toggleable) -------------------------
+# `taskpolicy -b` confines a process and everything it subsequently spawns to
+# the efficiency cores, which use less energy per unit of work — not merely
+# less power — at the cost of slower jobs. Tagging the listener covers every
+# job it starts from then on; tagging live workers catches the job already
+# running. Re-applying to an already-tagged pid is a no-op, so this is safe to
+# repeat every refresh.
+if $low_power; then
+    for pid in $(pgrep -x Runner.Listener) $worker_pids; do
+        taskpolicy -b -p "$pid" 2>/dev/null
+    done
+fi
 
 # --- Observe and enforce, per runner -----------------------------------------
 runner_loaded=()
@@ -317,3 +353,8 @@ battery_checked=false
 $always_run && battery_checked=true
 echo "Keep Mac awake during jobs | bash='$0' param1=toggle-caffeinate terminal=false refresh=true checked=$caffeinate_checked"
 echo "Run on battery | bash='$0' param1=toggle-always-run terminal=false refresh=true checked=$battery_checked"
+if $e_cores; then
+    low_power_checked=false
+    $low_power && low_power_checked=true
+    echo "Low-power mode (efficiency cores) | bash='$0' param1=toggle-low-power terminal=false refresh=true checked=$low_power_checked"
+fi

@@ -80,6 +80,12 @@ job count while several do.
   assertion described above.
 - **Run on battery** (global, default: off) — ignore the power source and
   keep every runner up all the time.
+- **Low-power mode** (global, default: off; Apple silicon only) — confine
+  runner work to the efficiency cores via `taskpolicy -b`. E-cores use less
+  energy per unit of work — not merely less power — so jobs run cooler and
+  quieter, but slower. Applies to the job already running as well as future
+  ones; switching it off lifts the policy from live processes immediately.
+  Hidden on Intel Macs, where there are no efficiency cores to confine to.
 
 Settings persist as flag files — global ones in `~/.config/runnerbar/`,
 each pause flag in its runner's own directory — so they survive reboots and
