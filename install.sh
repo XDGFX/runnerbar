@@ -34,5 +34,7 @@ if ! osascript -e 'tell application "System Events" to get the name of every log
     osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/SwiftBar.app", hidden:true}' >/dev/null
 fi
 
-open -a SwiftBar
+# Launch only if not already running: on macOS 26 a reopen event makes
+# SwiftBar show its "SwiftBar is already running" menu-bar recovery alert.
+pgrep -xq SwiftBar || open -a SwiftBar
 echo "Done — look for the runner glyph in your menu bar."
