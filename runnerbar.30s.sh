@@ -5,8 +5,9 @@
 # power-aware: runners up on AC power, stopped on battery — but never killed
 # mid-job, since a killed job fails CI; the active job finishes, then the next
 # refresh stops the service. The dropdown shows each runner's identity, the
-# run being worked, the queue in execution order, and recent runs with
-# durations.
+# run being worked, the queue in execution order, and runs completed in the
+# last three days with durations. Runners idle for three days sink to the
+# bottom.
 #
 # Runs every 30s (the .30s. in the filename). The policy lives here rather
 # than in launchd because launchd has no power-source condition. Consequence:
@@ -246,7 +247,11 @@ fi
 echo "---"
 
 # --- Dropdown: one block per runner ------------------------------------------
-for i in "${!runner_dirs[@]}"; do
+# Prints runner $1's block. Returns 3 when the runner has sat idle for three
+# days — nothing running, nothing queued, nothing finished — so the caller can
+# sink it below the busy ones.
+draw_runner() {
+    local i=$1 idle=false
     dir="${runner_dirs[$i]}"
     repo="${runner_repos[$i]}"
     mins="${runner_mins[$i]}"
@@ -298,7 +303,10 @@ def line(run, suffix, icon):
 
 active = [r for r in runs if r['status'] == 'in_progress']
 queued = [r for r in runs if r['status'] in ('queued', 'waiting', 'requested', 'pending')]
-done = [r for r in runs if r['status'] == 'completed'][:4]
+# Only what finished in the last three days: older runs are history, not news.
+cutoff = now - datetime.timedelta(days=3)
+done = [r for r in runs
+        if r['status'] == 'completed' and when(r['updatedAt']) >= cutoff][:4]
 
 # A runner drains its queue oldest-first, so show it in that order — and
 # GitHub reports a run as merely "queued" between its serial jobs, so when the
@@ -328,7 +336,11 @@ if done:
         icon = {'success': 'checkmark.circle', 'failure': 'xmark.circle'}.get(
             run['conclusion'], 'slash.circle')
         line(run, f" — {mins(when(run['startedAt']), when(run['updatedAt']))}", icon)
+if not (active or queued or done or worker_mins):
+    print("No runs in the last 3 days | sfcolor=gray")
+    sys.exit(3)
 EOF
+            [ $? -eq 3 ] && idle=true
         else
             echo "GitHub unreachable | sfcolor=gray"
         fi
@@ -342,7 +354,22 @@ EOF
     fi
     echo "Open Actions on GitHub | href=https://github.com/$repo/actions"
     echo "---"
+    $idle && return 3
+    return 0
+}
+
+# Busy runners first, idle ones after, each group in discovery order. A runner
+# whose runs couldn't be fetched stays with the busy ones — idleness unknown.
+idle_blocks=""
+for i in "${!runner_dirs[@]}"; do
+    block=$(draw_runner "$i")
+    if [ $? -eq 3 ]; then
+        idle_blocks+="$block"$'\n'
+    else
+        printf '%s\n' "$block"
+    fi
 done
+printf '%s' "$idle_blocks"
 
 # --- Global settings ----------------------------------------------------------
 # Ticked when active. Both act from the next refresh; switching keep-awake off
