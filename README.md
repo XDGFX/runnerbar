@@ -53,14 +53,20 @@ both.
 
 ```sh
 git clone https://github.com/XDGFX/runnerbar.git
-cd runnerbar && ./install.sh
+cd runnerbar && bash install.sh
 ```
 
-The script installs SwiftBar if it's missing, wires the plugin in (pointing
-SwiftBar at the clone, so `git pull` updates it in place), and sets SwiftBar
-to start at login. No configuration: runners are discovered from their launchd
-plists, and each one's repository and name are read from the `.runner` file in
-its install directory.
+The script installs SwiftBar if it's missing, wires the plugin in and sets
+SwiftBar to start at login. No configuration: runners are discovered from their
+launchd plists, and each one's repository and name are read from the `.runner`
+file in its install directory.
+
+The plugin is symlinked into a dedicated SwiftBar plugin folder
+(`~/.config/swiftbar`, or whichever folder SwiftBar already uses), so
+`git pull` updates it in place — restart SwiftBar afterwards to pick the
+change up. The clone itself is deliberately not used as the plugin folder:
+SwiftBar runs *every* executable file in that folder, so it would try to run
+`LICENSE`, `README.md` and the screenshots as plugins as well.
 
 ## Multiple runners
 

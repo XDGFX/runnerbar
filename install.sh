@@ -1,9 +1,15 @@
 #!/bin/bash
 # One-command install: SwiftBar via Homebrew if missing, plugin wired in,
 # SwiftBar launched and set to start at login.
+#
+# Deliberately not executable in the repo: if SwiftBar's plugin folder is ever
+# pointed at this clone, SwiftBar runs every executable file in it as a
+# plugin, and this script would be run on every SwiftBar launch. Invoke it as
+# `bash install.sh`.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN="runnerbar.30s.sh"
 
 if ! command -v brew >/dev/null; then
     echo "Homebrew is required (https://brew.sh) — install it and re-run." >&2
@@ -15,19 +21,27 @@ if ! brew list --cask swiftbar >/dev/null 2>&1 && [ ! -d /Applications/SwiftBar.
     brew install --cask swiftbar
 fi
 
-# If SwiftBar already has a plugin folder, copy the plugin into it — a copy,
-# not a symlink, because SwiftBar's folder-watcher is unreliable with
-# symlinks. Otherwise point SwiftBar at this clone, so future `git pull`s
-# update the plugin in place.
+# SwiftBar runs every executable file in its plugin folder, so that folder
+# must hold plugins and nothing else. Pointing it at this clone — which is
+# what this script used to do — makes SwiftBar run LICENSE, README.md and the
+# screenshots as plugins too. Each one claims a menu bar slot, and once the
+# bar is full macOS silently drops the overflow, so the real plugin never
+# appears. Install into a dedicated folder instead, reusing whichever folder
+# SwiftBar already points at unless that folder is this clone.
 existing=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || true)
 if [ -n "$existing" ] && [ "$existing" != "$SCRIPT_DIR" ]; then
-    cp "$SCRIPT_DIR/runnerbar.30s.sh" "$existing/"
-    chmod +x "$existing/runnerbar.30s.sh"
-    echo "Plugin copied into $existing (re-run this script after a git pull to update)."
+    plugin_dir="$existing"
 else
-    defaults write com.ameba.SwiftBar PluginDirectory "$SCRIPT_DIR"
-    echo "SwiftBar plugin folder set to $SCRIPT_DIR."
+    plugin_dir="${XDG_CONFIG_HOME:-$HOME/.config}/swiftbar"
 fi
+mkdir -p "$plugin_dir"
+
+# Symlinked rather than copied, so `git pull` updates the plugin in place.
+# SwiftBar's folder-watcher doesn't reliably see edits through a symlink, so
+# a pull wants a SwiftBar restart rather than a refresh.
+ln -sfn "$SCRIPT_DIR/$PLUGIN" "$plugin_dir/$PLUGIN"
+defaults write com.ameba.SwiftBar PluginDirectory "$plugin_dir"
+echo "Plugin linked into $plugin_dir."
 
 # Start at login, added only once.
 if ! osascript -e 'tell application "System Events" to get the name of every login item' 2>/dev/null | grep -q SwiftBar; then
@@ -36,5 +50,15 @@ fi
 
 # Launch only if not already running: on macOS 26 a reopen event makes
 # SwiftBar show its "SwiftBar is already running" menu-bar recovery alert.
-pgrep -xq SwiftBar || open -a SwiftBar
+# A change of plugin folder is only read at launch, so that needs a restart;
+# a plugin added to the folder SwiftBar already watches just needs a refresh.
+if ! pgrep -xq SwiftBar; then
+    open -a SwiftBar
+elif [ "$plugin_dir" != "$existing" ]; then
+    pkill -x SwiftBar || true
+    for _ in 1 2 3 4 5; do pgrep -xq SwiftBar || break; sleep 1; done
+    open -a SwiftBar
+else
+    open -g 'swiftbar://refreshallplugins'
+fi
 echo "Done — look for the runner glyph in your menu bar."
