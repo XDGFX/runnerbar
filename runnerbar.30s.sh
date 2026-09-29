@@ -294,6 +294,13 @@ def mins(start, end):
     return f"{max(0, round((end - start).total_seconds() / 60))}m"
 
 
+def ago(start):
+    m = max(0, round((now - start).total_seconds() / 60))
+    if m < 60:
+        return f"{m}m ago"
+    return f"{m // 60}h ago" if m < 24 * 60 else f"{m // (24 * 60)}d ago"
+
+
 def line(run, suffix, icon):
     # A literal | would read as a SwiftBar parameter separator.
     title = run['displayTitle'].replace('|', '¦')
@@ -335,7 +342,8 @@ if done:
     for run in done:
         icon = {'success': 'checkmark.circle', 'failure': 'xmark.circle'}.get(
             run['conclusion'], 'slash.circle')
-        line(run, f" — {mins(when(run['startedAt']), when(run['updatedAt']))}", icon)
+        started = when(run['startedAt'])
+        line(run, f" — {ago(started)}, took {mins(started, when(run['updatedAt']))}", icon)
 if not (active or queued or done or worker_mins):
     print("No runs in the last 3 days | sfcolor=gray")
     sys.exit(3)
