@@ -393,3 +393,5 @@ if $e_cores; then
     $low_power && low_power_checked=true
     echo "Low-power mode (efficiency cores) | bash='$0' param1=toggle-low-power terminal=false refresh=true checked=$low_power_checked"
 fi
+echo "---"
+echo "Sponsor RunnerBar | href=https://github.com/sponsors/XDGFX sfimage=heart"
