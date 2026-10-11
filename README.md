@@ -107,6 +107,11 @@ icon from the menu bar, untick it in SwiftBar's preferences.
 - GitHub deregisters a runner that stays offline for 14 days; on a
   daily-driver laptop that never comes up.
 
+## Support
+
+RunnerBar is free and open source. If it saved you some time, you can
+[sponsor me on GitHub](https://github.com/sponsors/XDGFX).
+
 ## Licence
 
 MIT.
