@@ -92,6 +92,7 @@ job count while several do.
   quieter, but slower. Applies to the job already running as well as future
   ones; switching it off lifts the policy from live processes immediately.
   Hidden on Intel Macs, where there are no efficiency cores to confine to.
+- **Sponsor RunnerBar** — opens the GitHub Sponsors page.
 
 Settings persist as flag files — global ones in `~/.config/runnerbar/`,
 each pause flag in its runner's own directory — so they survive reboots and
